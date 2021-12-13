@@ -190,7 +190,9 @@ type Config struct {
 	} `mapstructure:"join_server"`
 
 	Roaming struct {
-		ResolveNetIDDomainSuffix string `mapstructure:"resolve_netid_domain_suffix"`
+		ResolveNetIDDomainSuffix  string `mapstructure:"resolve_netid_domain_suffix"`
+		ResolveDevEUIDomainSuffix string `mapstructure:"resolve_deveui_domain_suffix"`
+		RoamingDevEUI             bool   `mapstructure:"roaming_deveui"`
 
 		API struct {
 			Bind    string `mapstructure:"bind"`
@@ -244,6 +246,7 @@ type RoamingServer struct {
 	Async                  bool          `mapstructure:"async"`
 	AsyncTimeout           time.Duration `mapstructure:"async_timeout"`
 	PassiveRoaming         bool          `mapstructure:"passive_roaming"`
+	Port                   string        `mapstructure:"port"`
 	PassiveRoamingLifetime time.Duration `mapstructure:"passive_roaming_lifetime"`
 	PassiveRoamingKEKLabel string        `mapstructure:"passive_roaming_kek_label"`
 	Server                 string        `mapstructure:"server"`

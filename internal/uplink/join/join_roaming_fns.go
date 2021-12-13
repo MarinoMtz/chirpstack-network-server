@@ -14,7 +14,9 @@ import (
 	"github.com/brocaar/chirpstack-network-server/v3/internal/helpers"
 	"github.com/brocaar/chirpstack-network-server/v3/internal/logging"
 	"github.com/brocaar/chirpstack-network-server/v3/internal/models"
-	"github.com/brocaar/chirpstack-network-server/v3/internal/roaming"
+
+	roaming "github.com/brocaar/chirpstack-network-server/v3/internal/roaming"
+
 	"github.com/brocaar/chirpstack-network-server/v3/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
@@ -36,20 +38,35 @@ func StartPRFNS(ctx context.Context, rxPacket models.RXPacket, jrPL *lorawan.Joi
 		rxPacket:           rxPacket,
 		joinRequestPayload: jrPL,
 	}
-
-	for _, f := range []func() error{
-		cctx.filterRxInfoByPublicOnly,
-		cctx.getHomeNetID,
-		cctx.getNSClient,
-		cctx.startRoaming,
-		cctx.saveRoamingSession,
-	} {
-		if err := f(); err != nil {
-			if err == ErrAbort {
-				return nil
+	if roaming.RoamingDevEUI {
+		for _, f := range []func() error{
+			cctx.filterRxInfoByPublicOnly,
+			cctx.getHomeNetIDfromDevEUI,
+			cctx.getNSClient,
+			cctx.startRoaming,
+			cctx.saveRoamingSession,
+		} {
+			if err := f(); err != nil {
+				if err == ErrAbort {
+					return nil
+				}
+				return err
 			}
-
-			return err
+		}
+	} else {
+		for _, f := range []func() error{
+			cctx.filterRxInfoByPublicOnly,
+			cctx.getHomeNetID,
+			cctx.getNSClient,
+			cctx.startRoaming,
+			cctx.saveRoamingSession,
+		} {
+			if err := f(); err != nil {
+				if err == ErrAbort {
+					return nil
+				}
+				return err
+			}
 		}
 	}
 
@@ -71,6 +88,25 @@ func (ctx *startPRFNSContext) filterRxInfoByPublicOnly() error {
 	return nil
 }
 
+func (ctx *startPRFNSContext) getHomeNetIDfromDevEUI() error {
+	netid, err := roaming.GetHomeNetIDfromDevEUI(ctx.joinRequestPayload.DevEUI)
+	ctx.homeNetID = netid
+	log.WithFields(log.Fields{
+		"ctx_id":   ctx.ctx.Value(logging.ContextIDKey),
+		"net_id":   netid,
+		"join_eui": ctx.joinRequestPayload.JoinEUI,
+		"dev_eui":  ctx.joinRequestPayload.DevEUI,
+	}).Info("uplink/join/roaming_fns: resolved deveui to netid")
+
+	if err != nil {
+		log.WithFields(log.Fields{
+			"netid": netid,
+		}).Warning("roaming: unmarshal NetID error")
+	}
+	ctx.homeNetID = netid
+	return nil
+}
+
 func (ctx *startPRFNSContext) getHomeNetID() error {
 	jsClient, err := joinserver.GetClientForJoinEUI(ctx.joinRequestPayload.JoinEUI)
 	if err != nil {
@@ -86,12 +122,10 @@ func (ctx *startPRFNSContext) getHomeNetID() error {
 	}
 
 	log.WithFields(log.Fields{
-		"ctx_id":   ctx.ctx.Value(logging.ContextIDKey),
-		"net_id":   nsAns.HNetID,
-		"join_eui": ctx.joinRequestPayload.JoinEUI,
-		"dev_eui":  ctx.joinRequestPayload.DevEUI,
+		"ctx_id":  ctx.ctx.Value(logging.ContextIDKey),
+		"net_id":  nsAns.HNetID,
+		"dev_eui": ctx.joinRequestPayload.DevEUI,
 	}).Info("uplink/join: resolved joineui to netid")
-
 	ctx.homeNetID = nsAns.HNetID
 
 	return nil
@@ -108,10 +142,8 @@ func (ctx *startPRFNSContext) getNSClient() error {
 			}).Warning("uplink/join: no roaming agreement for netid")
 			return ErrAbort
 		}
-
 		return errors.Wrap(err, "get client for netid error")
 	}
-
 	ctx.nsClient = client
 	return nil
 }

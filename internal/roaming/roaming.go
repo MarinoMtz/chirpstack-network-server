@@ -3,6 +3,8 @@ package roaming
 import (
 	"encoding/hex"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -28,12 +30,13 @@ type agreement struct {
 }
 
 var (
-	resolveNetIDDomainSuffix string
-	roamingEnabled           bool
-	netID                    lorawan.NetID
-	agreements               []agreement
-	keks                     map[string][]byte
-
+	resolveNetIDDomainSuffix      string
+	ResolveDevEUIDomainSuffix     string
+	RoamingDevEUI                 bool
+	roamingEnabled                bool
+	netID                         lorawan.NetID
+	agreements                    []agreement
+	keks                          map[string][]byte
 	defaultEnabled                bool
 	defaultPassiveRoaming         bool
 	defaultPassiveRoamingLifetime time.Duration
@@ -45,11 +48,14 @@ var (
 	defaultTLSCert                string
 	defaultTLSKey                 string
 	defaultAuthorization          string
+	RoamingServers                []config.RoamingServer
 )
 
 // Setup configures the roaming package.
 func Setup(c config.Config) error {
 	resolveNetIDDomainSuffix = c.Roaming.ResolveNetIDDomainSuffix
+	ResolveDevEUIDomainSuffix = c.Roaming.ResolveDevEUIDomainSuffix
+	RoamingDevEUI = c.Roaming.RoamingDevEUI
 	netID = c.NetworkServer.NetID
 	keks = make(map[string][]byte)
 	agreements = []agreement{}
@@ -65,56 +71,16 @@ func Setup(c config.Config) error {
 	defaultTLSCert = c.Roaming.Default.TLSCert
 	defaultTLSKey = c.Roaming.Default.TLSKey
 	defaultAuthorization = c.Roaming.Default.Authorization
+	RoamingServers = c.Roaming.Servers
 
 	if defaultEnabled {
 		roamingEnabled = true
 	}
 
-	for _, server := range c.Roaming.Servers {
-		roamingEnabled = true
-
-		if server.Server == "" {
-			server.Server = fmt.Sprintf("https://%s%s", server.NetID.String(), resolveNetIDDomainSuffix)
+	if !RoamingDevEUI {
+		for _, server := range RoamingServers {
+			NewClientForNetID(server.NetID)
 		}
-
-		log.WithFields(log.Fields{
-			"net_id":                   server.NetID,
-			"passive_roaming":          server.PassiveRoaming,
-			"passive_roaming_lifetime": server.PassiveRoamingLifetime,
-			"server":                   server.Server,
-			"async":                    server.Async,
-			"async_timeout":            server.AsyncTimeout,
-		}).Info("roaming: configuring roaming agreement")
-
-		var redisClient redis.UniversalClient
-		if server.Async {
-			redisClient = storage.RedisClient()
-		}
-
-		client, err := backend.NewClient(backend.ClientConfig{
-			Logger:        log.StandardLogger(),
-			SenderID:      netID.String(),
-			ReceiverID:    server.NetID.String(),
-			Server:        server.Server,
-			CACert:        server.CACert,
-			TLSCert:       server.TLSCert,
-			TLSKey:        server.TLSKey,
-			Authorization: server.Authorization,
-			AsyncTimeout:  server.AsyncTimeout,
-			RedisClient:   redisClient,
-		})
-		if err != nil {
-			return errors.Wrapf(err, "new roaming client error for netid: %s", server.NetID)
-		}
-
-		agreements = append(agreements, agreement{
-			netID:                  server.NetID,
-			passiveRoaming:         server.PassiveRoaming,
-			passiveRoamingLifetime: server.PassiveRoamingLifetime,
-			passiveRoamingKEKLabel: server.PassiveRoamingKEKLabel,
-			client:                 client,
-			server:                 server.Server,
-		})
 	}
 
 	for _, k := range c.Roaming.KEK.Set {
@@ -127,6 +93,73 @@ func Setup(c config.Config) error {
 	}
 
 	return nil
+}
+
+func NewClientForNetID(clientNetID lorawan.NetID) {
+	for _, a := range agreements {
+		if a.netID == clientNetID {
+
+			log.WithFields(log.Fields{
+				"net_id": clientNetID,
+				"server": a.server,
+			}).Info("Roaming agreement already set up")
+			return
+		}
+	}
+
+	for _, server := range RoamingServers {
+		if server.NetID == clientNetID {
+			roamingEnabled = true
+			if server.Server == "" {
+				server.Server = fmt.Sprintf("https://%s%s%s%s", server.NetID.String(), resolveNetIDDomainSuffix, ":", server.Port)
+			}
+			log.WithFields(log.Fields{
+				"net_id":                   server.NetID,
+				"passive_roaming":          server.PassiveRoaming,
+				"passive_roaming_lifetime": server.PassiveRoamingLifetime,
+				"server":                   server.Server,
+				"async":                    server.Async,
+				"async_timeout":            server.AsyncTimeout,
+			}).Info("roaming: configuring new roaming agreement")
+
+			var redisClient redis.UniversalClient
+			if server.Async {
+				redisClient = storage.RedisClient()
+			}
+
+			client, err := backend.NewClient(backend.ClientConfig{
+				Logger:        log.StandardLogger(),
+				SenderID:      netID.String(),
+				ReceiverID:    server.NetID.String(),
+				Server:        server.Server,
+				CACert:        server.CACert,
+				TLSCert:       server.TLSCert,
+				TLSKey:        server.TLSKey,
+				Authorization: server.Authorization,
+				AsyncTimeout:  server.AsyncTimeout,
+				RedisClient:   redisClient,
+			})
+			if err != nil {
+				log.WithFields(log.Fields{
+					"net_id":                   server.NetID,
+					"passive_roaming":          server.PassiveRoaming,
+					"passive_roaming_lifetime": server.PassiveRoamingLifetime,
+					"server":                   server.Server,
+					"async":                    server.Async,
+					"async_timeout":            server.AsyncTimeout,
+				}).Info("roaming: error")
+			}
+
+			agreements = append(agreements, agreement{
+				netID:                  server.NetID,
+				passiveRoaming:         server.PassiveRoaming,
+				passiveRoamingLifetime: server.PassiveRoamingLifetime,
+				passiveRoamingKEKLabel: server.PassiveRoamingKEKLabel,
+				client:                 client,
+				server:                 server.Server,
+			})
+		}
+	}
 }
 
 // IsRoamingDevAddr returns true when the DevAddr does not match the NetID of
@@ -143,10 +176,58 @@ func IsRoamingEnabled() bool {
 	return roamingEnabled
 }
 
+func SetClientServer(netid string, cnameans string) {
+
+	var netID lorawan.NetID
+	netID.UnmarshalText([]byte(netid))
+
+	for _, server := range RoamingServers {
+		if server.NetID == netID {
+			server.Server = fmt.Sprintf("https://%s%s%s", cnameans, ":", server.Port)
+			NewClientForNetID(netID)
+			print("cnameans : ", cnameans, " ", server.Port, "\n")
+			print(server.Server)
+		}
+	}
+}
+
+func GetHomeNetIDfromDevEUI(dev_eui lorawan.EUI64) (lorawan.NetID, error) {
+	cname := dev_eui.String() + ResolveDevEUIDomainSuffix
+	cnameans, err := net.LookupCNAME(cname)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"cname": cname,
+		}).Warning("roaming: could not get CNAME or wrong CNAME entry")
+	}
+
+	netIDStr := strings.Split(cnameans, ".")[0]
+	var netID lorawan.NetID
+
+	netID.UnmarshalText([]byte(netIDStr))
+	if err != nil {
+		log.WithFields(log.Fields{
+			"cname": cname,
+		}).Warning("roaming: unmarshal NetID error")
+	}
+
+	log.WithFields(log.Fields{
+		"cname":     cname,
+		"cname_res": cnameans,
+	}).Info("roaming: LookupCNAME for DevEUI")
+
+	SetClientServer(netIDStr, cnameans) // Set the server from the CNAME Response
+
+	return netID, err
+}
+
 // GetClientForNetID returns the API client for the given NetID.
 func GetClientForNetID(clientNetID lorawan.NetID) (backend.Client, error) {
 	for _, a := range agreements {
 		if a.netID == clientNetID {
+			log.WithFields(log.Fields{
+				"net_id": clientNetID,
+				"server": a.server,
+			}).Info("roaming: roaming server :")
 			return a.client, nil
 		}
 	}

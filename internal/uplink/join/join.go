@@ -153,7 +153,6 @@ func (ctx *joinContext) getDeviceOrTryRoaming() error {
 				"dev_eui":  ctx.JoinRequestPayload.DevEUI,
 				"join_eui": ctx.JoinRequestPayload.JoinEUI,
 			}).Info("uplink/join: unknown device, try passive-roaming activation")
-
 			if err := StartPRFNS(ctx.ctx, ctx.RXPacket, ctx.JoinRequestPayload); err != nil {
 				return err
 			}
